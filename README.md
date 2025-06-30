@@ -3,7 +3,7 @@ A universal shell script to clean and optimize any Linux system. It auto-detects
 
 # 🧼 Universal Linux Cleanup Script
 
-![Preview](https://pixabay.com/get/gd53a215ce99e3f8342925bf13e0701f03dfa6042c9681ee58329de3378025905108c021675d8d4a5bbedb0a55a0fb62e9be06a0387b88e9f1dc7f2cf240360856d01360b0ed1dfb27e452d55f9c40743_1280.png?attachment=)
+![Preview](https://github.com/saraths3/Universal-Linux-Cleanup-Script/raw/refs/heads/main/logo.png)
 
 
 A lightweight, smart, and safe bash script to clean and optimize **any Linux desktop system**.  
