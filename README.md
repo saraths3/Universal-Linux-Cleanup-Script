@@ -37,10 +37,3 @@ Supports **Ubuntu, Fedora, Arch, openSUSE, Manjaro, Pop!_OS, Linux Mint** and mo
 
 ---
 
-## 🚀 Quick Start
-
-```bash
-git clone https://github.com/saraths3/Universal-Linux-Cleanup-Script.git
-cd Universal-Linux-Cleanup-Script
-chmod +x *.sh
-./universal_cleanup.sh       # or run specific: ./ubuntu_cleanup.sh
