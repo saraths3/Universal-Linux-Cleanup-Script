@@ -1,5 +1,7 @@
 #!/bin/bash
 
+echo "This will do wonders"
+
 set -euo pipefail
 ERROR_LOG="_"
 > "$ERROR_LOG"
