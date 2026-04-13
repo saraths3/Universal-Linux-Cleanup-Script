@@ -1,59 +1,96 @@
-#!/bin/bash
-echo "This will do wonders"
-set -euo pipefail
-ERROR_LOG="_"
-> "$ERROR_LOG"
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# system info
+ERROR_LOG="error.log"
+: > "$ERROR_LOG"
+
+log_error() {
+    echo "[ERROR] $1" >> "$ERROR_LOG"
+}
+
+# --- check requirements ---
+if ! command -v pacman >/dev/null 2>&1; then
+    echo "This script only supports Arch-based systems (pacman not found)."
+    exit 1
+fi
+
+# --- system info ---
 echo "system info"
 echo "-----------"
+
+. /etc/os-release
+
 echo "host: $(hostname)"
-echo "os: $(source /etc/os-release && echo "$PRETTY_NAME")"
+echo "os: $PRETTY_NAME"
 echo "kernel: $(uname -r)"
 echo "uptime: $(uptime -p)"
-echo "cpu: $(lscpu | grep 'Model name' | sed 's/Model name:[ \t]*//')"
+echo "cpu: $(lscpu | awk -F: '/Model name/ {print $2}' | xargs)"
 echo "ram: $(free -h | awk '/Mem:/ {print $3 "/" $2}')"
 echo "disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
 echo "home: $(df -h "$HOME" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
 echo "desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
 echo ""
 
-# list apps
+# --- list installed apps ---
 echo "listing installed apps..."
-pacman -Qq > installed_apps.txt || { echo "failed to list apps" >> "$ERROR_LOG"; exit 1; }
+if ! pacman -Qq > installed_apps.txt; then
+    log_error "failed to list installed apps"
+    exit 1
+fi
 
-# detect bloat
+# --- detect bloat ---
 echo "checking for bloat..."
-BLOAT_LIST=("libreoffice" "cheese" "rhythmbox" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" "simple-scan" "gnome-games" "totem" "manjaro-hello" "web-installer-url-handler")
-BLOAT_FOUND=()
 
-while read -r app; do
-    for bloat in "${BLOAT_LIST[@]}"; do
-        [[ "$app" == *"$bloat"* ]] && BLOAT_FOUND+=("$app")
-    done
-done < installed_apps.txt
+BLOAT_LIST=(
+    libreoffice cheese rhythmbox aisleriot
+    gnome-mahjongg gnome-mines gnome-sudoku
+    simple-scan gnome-games totem
+    manjaro-hello web-installer-url-handler
+)
 
-if [ ${#BLOAT_FOUND[@]} -eq 0 ]; then
+pattern="$(IFS='|'; echo "${BLOAT_LIST[*]}")"
+
+mapfile -t BLOAT_FOUND < <(grep -E "$pattern" installed_apps.txt || true)
+
+if [ "${#BLOAT_FOUND[@]}" -eq 0 ]; then
     echo "no bloat found"
 else
     echo "removing bloat..."
     for pkg in "${BLOAT_FOUND[@]}"; do
         echo "removing $pkg"
-        sudo pacman -Rsn --noconfirm "$pkg" || { echo "error removing $pkg" >> "$ERROR_LOG"; exit 1; }
+        if ! sudo pacman -Rsn --noconfirm "$pkg"; then
+            log_error "failed removing $pkg"
+        fi
     done
 fi
 
-# cleanup
+# --- cleanup ---
 echo "cleaning system..."
-sudo pacman -Sc --noconfirm || { echo "pacman clean failed" >> "$ERROR_LOG"; exit 1; }
-sudo pacman -Rns $(pacman -Qdtq) --noconfirm || echo "no orphans to remove" >> "$ERROR_LOG"
 
-rm -rf ~/.cache/* ~/.local/share/Trash/* ~/.thumbnails/* || echo "cache not fully cleaned" >> "$ERROR_LOG"
-sudo journalctl --vacuum-time=7d || echo "journal not cleaned" >> "$ERROR_LOG"
+if ! sudo pacman -Sc --noconfirm; then
+    log_error "pacman cache clean failed"
+fi
 
-# done
+orphans="$(pacman -Qdtq || true)"
+if [ -n "$orphans" ]; then
+    if ! sudo pacman -Rns --noconfirm $orphans; then
+        log_error "failed removing orphan packages"
+    fi
+else
+    echo "no orphan packages"
+fi
+
+# safer cache cleanup (no blind nuking)
+rm -rf "$HOME/.cache/"* 2>/dev/null || log_error "cache cleanup partial"
+rm -rf "$HOME/.local/share/Trash/"* 2>/dev/null || log_error "trash cleanup partial"
+
+if ! sudo journalctl --vacuum-time=7d; then
+    log_error "journal cleanup failed"
+fi
+
+# --- done ---
 if [ -s "$ERROR_LOG" ]; then
-    echo "done with errors, see _"
+    echo "done with errors. see $ERROR_LOG"
 else
     echo "done"
     rm -f "$ERROR_LOG"
