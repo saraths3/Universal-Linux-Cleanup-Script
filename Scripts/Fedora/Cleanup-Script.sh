@@ -1,61 +1,91 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ERROR_LOG="error.log"
+: > "$ERROR_LOG"
+
+log_error() {
+    echo "[ERROR] $1" >> "$ERROR_LOG"
+}
 
 echo "This will do wonders"
 
-set -euo pipefail
-ERROR_LOG="_"
-> "$ERROR_LOG"
+# --- check requirements ---
+if ! command -v rpm >/dev/null 2>&1 || ! command -v dnf >/dev/null 2>&1; then
+    echo "This script requires an RPM-based system with dnf."
+    exit 1
+fi
 
-# system info
+# --- system info ---
 echo "system info"
 echo "-----------"
+
+. /etc/os-release
+
 echo "host: $(hostname)"
-echo "os: $(source /etc/os-release && echo "$PRETTY_NAME")"
+echo "os: $PRETTY_NAME"
 echo "kernel: $(uname -r)"
 echo "uptime: $(uptime -p)"
-echo "cpu: $(lscpu | grep 'Model name' | sed 's/Model name:[ \t]*//')"
+echo "cpu: $(lscpu | awk -F: '/Model name/ {print $2}' | xargs)"
 echo "ram: $(free -h | awk '/Mem:/ {print $3 "/" $2}')"
 echo "disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
 echo "home: $(df -h "$HOME" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
 echo "desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
 echo ""
 
-# list apps
+# --- list apps ---
 echo "listing installed apps..."
-rpm -qa > installed_apps.txt || { echo "failed to list apps" >> "$ERROR_LOG"; exit 1; }
+if ! rpm -qa > installed_apps.txt; then
+    log_error "failed to list installed apps"
+    exit 1
+fi
 
-# detect bloat
+# --- detect bloat ---
 echo "checking for bloat..."
-BLOAT_LIST=("libreoffice" "cheese" "rhythmbox" "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" "simple-scan" "gnome-games" "totem")
-BLOAT_FOUND=()
 
-while read -r app; do
-    for bloat in "${BLOAT_LIST[@]}"; do
-        [[ "$app" == *"$bloat"* ]] && BLOAT_FOUND+=("$app")
-    done
-done < installed_apps.txt
+BLOAT_LIST=(
+    libreoffice cheese rhythmbox aisleriot
+    gnome-mahjongg gnome-mines gnome-sudoku
+    simple-scan gnome-games totem
+)
 
-if [ ${#BLOAT_FOUND[@]} -eq 0 ]; then
+pattern="$(IFS='|'; echo "${BLOAT_LIST[*]}")"
+mapfile -t BLOAT_FOUND < <(grep -E "$pattern" installed_apps.txt || true)
+
+if [ "${#BLOAT_FOUND[@]}" -eq 0 ]; then
     echo "no bloat found"
 else
     echo "removing bloat..."
     for pkg in "${BLOAT_FOUND[@]}"; do
         echo "removing $pkg"
-        sudo dnf remove -y "$pkg" || { echo "error removing $pkg" >> "$ERROR_LOG"; exit 1; }
+        if ! sudo dnf remove -y "$pkg"; then
+            log_error "failed removing $pkg"
+        fi
     done
 fi
 
-# cleanup
+# --- cleanup ---
 echo "cleaning system..."
-sudo dnf clean all || { echo "dnf clean failed" >> "$ERROR_LOG"; exit 1; }
-sudo dnf autoremove -y || { echo "autoremove failed" >> "$ERROR_LOG"; exit 1; }
 
-rm -rf ~/.cache/* ~/.local/share/Trash/* ~/.thumbnails/* || echo "cache not fully cleaned" >> "$ERROR_LOG"
-sudo journalctl --vacuum-time=7d || echo "journal not cleaned" >> "$ERROR_LOG"
+if ! sudo dnf clean all; then
+    log_error "dnf clean failed"
+fi
 
-# done
+if ! sudo dnf autoremove -y; then
+    log_error "autoremove failed"
+fi
+
+# safer cleanup (avoid blind nuking errors)
+rm -rf "$HOME/.cache/"* 2>/dev/null || log_error "cache cleanup partial"
+rm -rf "$HOME/.local/share/Trash/"* 2>/dev/null || log_error "trash cleanup partial"
+
+if ! sudo journalctl --vacuum-time=7d; then
+    log_error "journal cleanup failed"
+fi
+
+# --- done ---
 if [ -s "$ERROR_LOG" ]; then
-    echo "done with errors, see _"
+    echo "done with errors. see $ERROR_LOG"
 else
     echo "done"
     rm -f "$ERROR_LOG"
