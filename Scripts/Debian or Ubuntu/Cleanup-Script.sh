@@ -1,90 +1,223 @@
 #!/usr/bin/env bash
+
 set -Eeuo pipefail
 
-ERROR_LOG="error.log"
-: > "$ERROR_LOG"
+# =========================================================
+# Debian Cleanup Utility
+# Supports:
+#   - Debian
+#   - Ubuntu
+#   - Linux Mint
+#   - Pop!_OS
+#   - KDE Neon
+# =========================================================
 
-log_error() {
-    echo "[ERROR] $1" >> "$ERROR_LOG"
+readonly LOG_FILE="cleanup.log"
+readonly PACKAGE_LIST="installed_packages.txt"
+
+DRY_RUN=false
+
+# ---------- colors ----------
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+NC='\033[0m'
+
+# ---------- logging ----------
+info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-# --- check requirements ---
-if ! command -v dpkg >/dev/null 2>&1; then
-    echo "This script only supports Debian/Ubuntu (dpkg not found)."
-    exit 1
-fi
+success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
 
-# --- system info ---
-echo "system info"
-echo "-----------"
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
 
-. /etc/os-release
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+    echo "[ERROR] $1" >> "$LOG_FILE"
+}
 
-echo "host: $(hostname)"
-echo "os: $PRETTY_NAME"
-echo "kernel: $(uname -r)"
-echo "uptime: $(uptime -p)"
-echo "cpu: $(lscpu | awk -F: '/Model name/ {print $2}' | xargs)"
-echo "ram: $(free -h | awk '/Mem:/ {print $3 "/" $2}')"
-echo "disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
-echo "home: $(df -h "$HOME" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
-echo "desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
-echo ""
+run_cmd() {
+    if $DRY_RUN; then
+        echo "[DRY RUN] $*"
+    else
+        "$@"
+    fi
+}
 
-# --- list installed apps ---
-echo "listing installed apps..."
-if ! dpkg --get-selections | awk '{print $1}' > installed_apps.txt; then
-    log_error "failed to list installed apps"
-    exit 1
-fi
+# ---------- checks ----------
+check_system() {
 
-# --- detect bloat ---
-echo "checking for bloat..."
+    if [[ $EUID -eq 0 ]]; then
+        error "Do not run this script as root."
+        exit 1
+    fi
 
-BLOAT_LIST=(
-    libreoffice cheese rhythmbox thunderbird
-    aisleriot gnome-mahjongg gnome-mines
-    gnome-sudoku simple-scan gnome-games
-)
+    if ! command -v apt >/dev/null 2>&1; then
+        error "APT not found. Debian-based distro required."
+        exit 1
+    fi
+}
 
-pattern="$(IFS='|'; echo "${BLOAT_LIST[*]}")"
-mapfile -t BLOAT_FOUND < <(grep -E "$pattern" installed_apps.txt || true)
+# ---------- system info ----------
+system_info() {
 
-if [ "${#BLOAT_FOUND[@]}" -eq 0 ]; then
-    echo "no bloat found"
-else
-    echo "removing bloat..."
-    for pkg in "${BLOAT_FOUND[@]}"; do
-        echo "removing $pkg"
-        if ! sudo apt remove -y "$pkg"; then
-            log_error "failed removing $pkg"
+    source /etc/os-release
+
+    echo
+    echo "========== SYSTEM INFO =========="
+    echo "Hostname : $(hostname)"
+    echo "OS       : $PRETTY_NAME"
+    echo "Kernel   : $(uname -r)"
+    echo "Desktop  : ${XDG_CURRENT_DESKTOP:-Unknown}"
+    echo "Uptime   : $(uptime -p)"
+    echo "CPU      : $(lscpu | awk -F: '/Model name/ {print $2}' | xargs)"
+    echo "RAM      : $(free -h | awk '/Mem:/ {print $3 "/" $2}')"
+    echo "Disk     : $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+    echo "Home     : $(df -h "$HOME" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+    echo "================================="
+    echo
+}
+
+# ---------- package export ----------
+save_packages() {
+
+    info "Saving installed package list..."
+
+    if dpkg-query -f '${binary:Package}\n' -W > "$PACKAGE_LIST"; then
+        success "Saved package list to $PACKAGE_LIST"
+    else
+        error "Failed to save package list"
+    fi
+}
+
+# ---------- remove bloat ----------
+remove_bloat() {
+
+    info "Checking for unnecessary packages..."
+
+    local packages=(
+        cheese
+        rhythmbox
+        thunderbird
+        aisleriot
+        gnome-mahjongg
+        gnome-mines
+        gnome-sudoku
+        simple-scan
+        gnome-games
+    )
+
+    local installed=()
+
+    for pkg in "${packages[@]}"; do
+        if dpkg -s "$pkg" &>/dev/null; then
+            installed+=("$pkg")
         fi
     done
-fi
 
-# --- cleanup ---
-echo "cleaning system..."
+    if [[ ${#installed[@]} -eq 0 ]]; then
+        success "No bloat packages found"
+        return
+    fi
 
-if ! sudo apt clean; then
-    log_error "apt clean failed"
-fi
+    echo
+    echo "Packages to remove:"
+    printf ' - %s\n' "${installed[@]}"
+    echo
 
-if ! sudo apt autoremove -y; then
-    log_error "autoremove failed"
-fi
+    read -rp "Continue removal? [y/N]: " confirm
 
-# safer cleanup (don’t blindly nuke everything)
-rm -rf "$HOME/.cache/"* 2>/dev/null || log_error "cache cleanup partial"
-rm -rf "$HOME/.local/share/Trash/"* 2>/dev/null || log_error "trash cleanup partial"
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        run_cmd sudo apt remove -y "${installed[@]}"
+    else
+        warn "Skipped package removal"
+    fi
+}
 
-if ! sudo journalctl --vacuum-time=7d; then
-    log_error "journal cleanup failed"
-fi
+# ---------- cleanup ----------
+system_cleanup() {
 
-# --- done ---
-if [ -s "$ERROR_LOG" ]; then
-    echo "done with errors. see $ERROR_LOG"
-else
-    echo "done"
-    rm -f "$ERROR_LOG"
-fi
+    info "Running system cleanup..."
+
+    run_cmd sudo apt autoremove -y
+    run_cmd sudo apt autoclean -y
+    run_cmd sudo apt clean
+}
+
+# ---------- user cache ----------
+clean_user_cache() {
+
+    info "Cleaning user cache..."
+
+    find "$HOME/.cache" -mindepth 1 -delete 2>/dev/null || \
+        error "Cache cleanup partially failed"
+
+    find "$HOME/.local/share/Trash" -mindepth 1 -delete 2>/dev/null || \
+        error "Trash cleanup partially failed"
+
+    success "User cache cleaned"
+}
+
+# ---------- journals ----------
+clean_journal() {
+
+    info "Cleaning journal logs..."
+
+    run_cmd sudo journalctl --vacuum-time=7d
+}
+
+# ---------- finish ----------
+finish() {
+
+    echo
+    echo "========== COMPLETE =========="
+
+    if [[ -s "$LOG_FILE" ]]; then
+        warn "Completed with warnings/errors"
+        warn "Check: $LOG_FILE"
+    else
+        success "Cleanup completed successfully"
+        rm -f "$LOG_FILE"
+    fi
+
+    echo "================================"
+}
+
+# ---------- args ----------
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)
+            DRY_RUN=true
+            ;;
+    esac
+done
+
+# ---------- main ----------
+main() {
+
+    : > "$LOG_FILE"
+
+    check_system
+
+    system_info
+
+    save_packages
+
+    remove_bloat
+
+    system_cleanup
+
+    clean_user_cache
+
+    clean_journal
+
+    finish
+}
+
+main
